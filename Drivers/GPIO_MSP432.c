@@ -56,6 +56,15 @@ void GPIO_init_board(void)
 
     GPIO_write_bit_high(P1,B1); // Force pull-up.
     GPIO_write_bit_high(P1,B4); // Force pull-up.
+
+    GPIO_set_input_bit(P2,B5);  //Boton de arranque - paro
+    GPIO_set_input_bit(P2,B6);  //Boton de inicio de secuencia de luces
+
+    GPIO_enable_bit_pullup(P2,B5);
+    GPIO_enable_bit_pullup(P2,B6);
+
+    GPIO_write_bit_high(P2,B5); // Force pull-up.
+    GPIO_write_bit_high(P2,B6); // Force pull-up.
 }
 
 /**********************************NEW*****************************************

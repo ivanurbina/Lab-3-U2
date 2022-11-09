@@ -31,7 +31,7 @@ void ADC_init()
     BITBAND_PERI(ADC14->CTL0, ADC14_CTL0_SHP_OFS) = 1;
 
     //Configura el modo de conversión del módulo ADC (mode 0b01: Sequence of channels).
-    ADC14 -> CTL0 |= ADC14_CTL0_CONSEQ_1;
+    ADC14 -> CTL0 |= ADC14_CTL0_CONSEQ_3;
 
     //Asigna la resolución de 14bits.
     ADC14 -> CTL1 = ADC14_CTL1_RES__14BIT ;
@@ -39,15 +39,16 @@ void ADC_init()
     //Se asigna un pin para cada canal a utilizar.
     ADC14 -> MCTL[0] = ADC14_MCTLN_VRSEL_0 | ADC14_MCTLN_INCH_0;
     ADC14 -> MCTL[1] = ADC14_MCTLN_VRSEL_0 | ADC14_MCTLN_INCH_1;
+    ADC14 -> MCTL[2] = ADC14_MCTLN_VRSEL_0 | ADC14_MCTLN_INCH_2;
 
     /* Configura el CH1 como el canal final de la secuencia de conversión.
      * Es decir, cada que se dispare el módulo ADC, se llevará a cabo la
      * conversión para los canales CH0 hasta el CH1.                    */
-    BITBAND_PERI(ADC14->MCTL[1], ADC14_MCTLN_EOS_OFS) = 1;
+    BITBAND_PERI(ADC14->MCTL[2], ADC14_MCTLN_EOS_OFS) = 1;
 
+    GPIO_setAsPeripheralModuleFunctionOutputPin(5, BIT0, 1);    // Establece como pin análogo.
     GPIO_setAsPeripheralModuleFunctionOutputPin(5, BIT4, 1);    // Establece como pin análogo.
     GPIO_setAsPeripheralModuleFunctionOutputPin(5, BIT5, 1);    // Establece como pin análogo.
-
 }
 
 /*****************************************************************************

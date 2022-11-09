@@ -5,28 +5,40 @@
  // Program version: CCS V8.3 TI
  // Company:         Texas Instruments
  // Description:     Funciones de control de HW a través de estados.
- // Authors:         José Luis Chacón M. y Jesús Alejandro Navarro Acosta.
- // Updated:         11/2018
+ // Authors:         Ivan Urbina, Ernesto Arciniega, Luis Macias
+ // Updated:         11/2022
 
 #include "HVAC.h"
 
-/* Variables sobre las cuales se maneja el sistema. */
-float TemperaturaActual;       // Temperatura.
-float SetPoint = 25.0;         // Valor deseado.
-
-char state[MAX_MSG_SIZE];      // Cadena a imprimir.
-
-bool toggle = 0;               // Toggle para el heartbeat.
-uint32_t delay;                // Delay aplicado al heartbeat.
+//Banderas boleanas par el control de persianas, secuencia de luces y final del propgrama
+bool B_1 = false;
+bool B_2 = false;
+bool persiana1 = false;
+bool persiana2 = false;
+bool sl = 0;
+bool final = false;
 bool event = FALSE;            // Evento I/O que fuerza impresión inmediata.
 
-bool FAN_LED_State = 0;                                     // Estado led_FAN.
-const char* SysSTR[] = {"Cool","Off","Heat","Only Fan"};    // Control de los estados.
+//Arreglos de caracteres par impresion de estado de luces con el UART
+char lux1[10];
+char lux2[10];
+char lux3[10];
+
+uint8_t luxes[3];   //Arreglo para lectura de cada Luz con el ADC
+
+//Enteros usados para ciclos For y Switch(secuencia de luces)
+uint8_t j;
+uint8_t i = 0;
 
 /* **** SE DECLARARON LAS VARIABLES Y FUNCIONES PARA REALIZAR EL DALAY CON EL TIMER ******** */
-extern void Timer32_INT1 (void); // Función de interrupción.
-extern void Delay_ms (uint32_t time); // Función de delay.
-uint32_t tiempo = 5000;
+extern void Timer32_INT1 (void);         //Función de interrupción.
+extern void Delay_ms (uint32_t time);   //Función de delay.
+extern void Delay_ms1 (uint32_t time1); //Función de delay que evalua si se termina el programa.
+void funcion_inicial(void);             //Funcion que se ejecuta al iniciar el programa, espera que se presione el Boton conectado en P2.5
+void O_C_P1(void);                      //Funcion de apertura, cierre de persiana 1
+void O_C_P2(void);                      //Funcion de apertura, cierre de persiana 2
+void secuencia(void);                   //Funcion que ejecuta la secuencia de luces con el RGB
+void terminar_programa(void);           //Funcion para terminar el programa
 
 /*FUNCTION******************************************************************************
 *
@@ -41,12 +53,7 @@ void System_InicialiceTIMER (void)
     T32_Init1();
     Int_registerInterrupt(INT_T32_INT1, Timer32_INT1);
     Int_enableInterrupt(INT_T32_INT1);
-
 }
-
-
-
-/*******************************************************************************************/
 
 /**********************************************************************************
  * Function: INT_SWI
@@ -61,13 +68,35 @@ void INT_SWI(void)
     GPIO_clear_interrupt_flag(P1,B1); // Limpia la bandera de la interrupción.
     GPIO_clear_interrupt_flag(P1,B4); // Limpia la bandera de la interrupción.
 
-    if(!GPIO_getInputPinValue(SETPOINT_PORT,BIT(SP_UP)))        // Si se trata del botón para aumentar setpoint (SW1).
-        HVAC_SetPointUp();
-    else if(!GPIO_getInputPinValue(SETPOINT_PORT,BIT(SP_DOWN))) // Si se trata del botón para disminuir setpoint (SW2).
-        HVAC_SetPointDown();
+    if(!GPIO_getInputPinValue(Puerto1,BIT(persiana_1)))         //Cambia de estado la persiana 1
+        B_1 = true;
+    else if(!GPIO_getInputPinValue(Puerto1,BIT(persiana_2)))    //Cambia de estado la persiana 2
+        B_2 = true;
 
+    event = true;
+}
 
-    return;
+/**********************************************************************************
+ * Function: INT_SW2
+ * Preconditions: Interrupción habilitada, registrada e inicialización de módulos.
+ * Overview: Función que es llamada cuando se genera
+ *           la interrupción del botón de P2.5 o P2.6.
+ * Input: None.
+ * Output: None.
+ **********************************************************************************/
+void INT_SW2(void)
+{
+    GPIO_clear_interrupt_flag(P2,B6);   // Limpia la bandera de la interrupción.
+    GPIO_clear_interrupt_flag(P2,B5);   // Limpia la bandera de la interrupción.
+
+    if(!GPIO_getInputPinValue(Puerto2,BIT(B6))) //Boton para la secuencia de luces
+    {
+        sl ^= 1;        //Se habilita la secuencia de luces
+        event = true;   //Forza la impresion debido a el evento
+    }
+
+    if(!GPIO_getInputPinValue(Puerto2,BIT(B5))) //Boton que termina el programa
+       final = true;
 }
 
 /*FUNCTION******************************************************************************
@@ -80,32 +109,30 @@ void INT_SWI(void)
 *END***********************************************************************************/
 void HVAC_InicialiceIO(void)
 {
-    // Para entradas y salidas ya definidas en la tarjeta.
+    // Para entradas y salidas ya definidas en la tarjeta, asi como los botones externos.
     GPIO_init_board();
 
-    // Modo de interrupción de los botones principales.
-    GPIO_interruptEdgeSelect(SETPOINT_PORT,BIT(SP_UP),   GPIO_HIGH_TO_LOW_TRANSITION);
-    GPIO_interruptEdgeSelect(SETPOINT_PORT,BIT(SP_DOWN), GPIO_HIGH_TO_LOW_TRANSITION);
+    // Modo de interrupción de los botones principales y los externos (P2.5 y P2.6).
+    GPIO_interruptEdgeSelect(Puerto1,BIT(persiana_1),   GPIO_HIGH_TO_LOW_TRANSITION);
+    GPIO_interruptEdgeSelect(Puerto1,BIT(persiana_2), GPIO_HIGH_TO_LOW_TRANSITION);
+    GPIO_interruptEdgeSelect(Puerto2,BIT(B5),   GPIO_HIGH_TO_LOW_TRANSITION);
+    GPIO_interruptEdgeSelect(Puerto2,BIT(B6), GPIO_HIGH_TO_LOW_TRANSITION);
 
     // Preparativos de interrupción.
     GPIO_clear_interrupt_flag(P1,B1);
     GPIO_clear_interrupt_flag(P1,B4);
     GPIO_enable_bit_interrupt(P1,B1);
     GPIO_enable_bit_interrupt(P1,B4);
-
-    // Se necesitan más entradas, se usarán las siguientes:
-    GPIO_setBitIO(FAN_PORT, FAN_ON, ENTRADA);
-    GPIO_setBitIO(FAN_PORT, FAN_AUTO, ENTRADA);
-    GPIO_setBitIO(SYSTEM_PORT, SYSTEM_COOL, ENTRADA);
-    GPIO_setBitIO(SYSTEM_PORT, SYSTEM_OFF, ENTRADA);
-    GPIO_setBitIO(SYSTEM_PORT, SYSTEM_HEAT, ENTRADA);
-    GPIO_setBitIO(SETPOINT_PORT, SP_UP, ENTRADA);
-    GPIO_setBitIO(SETPOINT_PORT, SP_DOWN, ENTRADA);
+    GPIO_clear_interrupt_flag(P2,B6);
+    GPIO_enable_bit_interrupt(P2,B6);
+    GPIO_clear_interrupt_flag(P2,B5);
 
     /* Uso del módulo Interrupt para generar la interrupción general y registro de esta en una función
     *  que se llame cuando la interrupción se active.                                                   */
     Int_registerInterrupt(INT_PORT1, INT_SWI);
     Int_enableInterrupt(INT_PORT1);
+    Int_registerInterrupt(INT_PORT2, INT_SW2);
+    Int_enableInterrupt(INT_PORT2);
 }
 
 /*FUNCTION******************************************************************************
@@ -114,18 +141,21 @@ void HVAC_InicialiceIO(void)
 * Returned Value   : None.
 * Comments         :
 *    Inicializa las configuraciones deseadas para
-*    el módulo general ADC y dos de sus canales; uno para la temperatura, otro para
-*    el heartbeat.
+*    el módulo general ADC, 3 canales, uno para cada luz
 *
 *END***********************************************************************************/
 void HVAC_InicialiceADC(void)
 {
     // Iniciando ADC y canales.
     ADC_Initialize(ADC_14bitResolution, ADC_CLKDiv8);
-    ADC_SetConvertionMode(ADC_SequenceOfChannels);
-    ADC_EnableTemperatureSensor(TEMP_CH);                          // Se configura el sensor en el canal 0.
-    ADC_ConfigurePinChannel(HEARTBEAT_CH, POT_PIN, ADC_VCC_VSS);   // Pin AN1 para potenciómetro.
-    ADC_SetEndOfSequenceChannel(HEARTBEAT_CH);                     // Termina en el AN1, canal último.
+    ADC_SetConvertionMode(ADC_SequenceOfChannelsRepeat);    //Lee 3 canales (3 potenciometros)
+
+    ADC_ConfigurePinChannel(Lampara1, POT_PIN1, ADC_VCC_VSS);   // Pin AN1 5.4 para potenciómetro.
+    ADC_ConfigurePinChannel(Lampara2, POT_PIN2, ADC_VCC_VSS);   // Pin AN0 5.5 para potenciómetro.
+    ADC_ConfigurePinChannel(Lampara3, POT_PIN3, ADC_VCC_VSS);   // Pin AN5 5.0 para potenciómetro.
+
+    ADC_SetStartOfSequenceChannel(Lampara1);
+    ADC_SetEndOfSequenceChannel(Lampara3);                     // Termina en el AN5, canal 2.
 }
 
 /*FUNCTION******************************************************************************
@@ -144,168 +174,34 @@ void HVAC_InicialiceUART (void)
 
 /*FUNCTION******************************************************************************
 *
-* Function Name    : HVAC_ActualizarEntradas
+* Function Name    : funcion_inicial
 * Returned Value   : None.
 * Comments         :
-*    Actualiza los variables indicadores de las entradas sobre las cuales surgirán
-*    las salidas.
-*
+*    Realiza el estado inicial de la aplicacion
 *END***********************************************************************************/
-void HVAC_ActualizarEntradas(void)
+void funcion_inicial(void)
 {
-    static bool ultimos_estados[] = {FALSE, FALSE, FALSE, FALSE, FALSE};
+    bool condicion = true;
 
-    TemperaturaActual = ADC_GetTemperature(TEMP_CH);                                // Averigua temperatura actual.
+    //Inician todos los LED apagados
+    GPIO_setOutput(BSP_LED1_PORT,  BSP_LED1,  0);
+    GPIO_setOutput(BSP_LED2_PORT,  BSP_LED2,  0);
+    GPIO_setOutput(BSP_LED3_PORT,  BSP_LED3,  0);
+    GPIO_setOutput(BSP_LED4_PORT,  BSP_LED4,  0);
+    UART_putsf(MAIN_UART, "Presione el switch del P2.5\r\n");   //Mensaje inicial
+    GPIO_disable_bit_interrupt(P2,B5);
 
-    if(GPIO_getInputPinValue(FAN_PORT,BIT(FAN_ON)) != NORMAL_STATE_EXTRA_BUTTONS)   // Observa entradas.
+    while(condicion)                                            //Mientras no se presione un switch, no inicia la aplicacion
     {
-        EstadoEntradas.FanState = On;
-        EstadoEntradas.SystemState = FanOnly;
-
-        if(ultimos_estados[0] == FALSE)
-            event = TRUE;
-
-        ultimos_estados[0] = TRUE;
-        ultimos_estados[1] = FALSE;
-    }
-
-    else if(GPIO_getInputPinValue(FAN_PORT,BIT(FAN_AUTO)) != NORMAL_STATE_EXTRA_BUTTONS)    // No hay default para
-    {                                                                                       // cuando no se detecta
-        EstadoEntradas.FanState = Auto;                                                     // ninguna entrada activa.
-        if(ultimos_estados[1] == FALSE)
-            event = TRUE;
-
-        ultimos_estados[1] = TRUE;
-        ultimos_estados[0] = FALSE;
-
-        if(GPIO_getInputPinValue(SYSTEM_PORT,BIT(SYSTEM_COOL)))                             // Sistema en COOL.
+        if(!GPIO_getInputPinValue(Puerto2,BIT(B5)))
         {
-            EstadoEntradas.SystemState = Cool;
-            if(ultimos_estados[2] == FALSE)
-                event = TRUE;
-            ultimos_estados[2] = TRUE;
-            ultimos_estados[3] = FALSE;
-            ultimos_estados[4] = FALSE;
-        }
-        else if(GPIO_getInputPinValue(SYSTEM_PORT,BIT(SYSTEM_OFF)))                         // Sistema apagado.
-        {
-            EstadoEntradas.SystemState = Off;
-            if(ultimos_estados[3] == FALSE)
-                event = TRUE;
-            ultimos_estados[2] = FALSE;
-            ultimos_estados[3] = TRUE;
-            ultimos_estados[4] = FALSE;
-        }
-        else if(GPIO_getInputPinValue(SYSTEM_PORT,BIT(SYSTEM_HEAT)))                        // Sistema en HEAT.
-        {
-            EstadoEntradas.SystemState = Heat;
-            if(ultimos_estados[4] == FALSE)
-                event = TRUE;
-            ultimos_estados[2] = FALSE;
-            ultimos_estados[3] = FALSE;
-            ultimos_estados[4] = TRUE;
-        }
-        else
-        {
-            EstadoEntradas.SystemState = Off;
-            ultimos_estados[2] = FALSE;
-            ultimos_estados[3] = FALSE;
-            ultimos_estados[4] = FALSE;
-        }                                                           // Este es solo un default en el caso de que
-    }                                                               // el sistema no encuentre ningun estado de los 3
-}                                                                   // activo (deberia ser un error debido a que debe
-                                                                    // haber solo un botón activado siempre).
-
-/*FUNCTION******************************************************************************
-*
-* Function Name    : HVAC_ActualizarSalidas
-* Returned Value   : None.
-* Comments         :
-*    Decide a partir de las entradas actualizadas las salidas principales,
-*    y en ciertos casos, en base a una cuestión de temperatura, la salida del 'fan'.
-*
-*END***********************************************************************************/
-void HVAC_ActualizarSalidas(void)
-{
-    // Cambia el valor de las salidas de acuerdo a entradas.
-
-    if(EstadoEntradas.FanState == On)
-    {
-        FAN_LED_State = 1;
-        GPIO_setOutput(FAN_LED_PORT,  FAN_LED,  1);
-        GPIO_setOutput(HEAT_LED_PORT, HEAT_LED, 0);
-        GPIO_setOutput(COOL_LED_PORT, COOL_LED, 0);
-    }
-
-    else if(EstadoEntradas.FanState == Auto)
-    {
-        switch(EstadoEntradas.SystemState)
-        {
-        case Off:   GPIO_setOutput(FAN_LED_PORT,  FAN_LED,  0);
-                    GPIO_setOutput(HEAT_LED_PORT, HEAT_LED, 0);
-                    GPIO_setOutput(COOL_LED_PORT, COOL_LED, 0);
-                    FAN_LED_State = 0;
-                    break;
-        case Heat:  HVAC_Heat(); break;
-        case Cool:  HVAC_Cool(); break;
+            UART_putsf(MAIN_UART, "Aplicacion iniciada\r\n");   //Mensaje de inicio de app
+            GPIO_setOutput(BSP_LED1_PORT,  BSP_LED1,  1);
+            Delay_ms(200);
+            GPIO_enable_bit_interrupt(P2,B5);
+            condicion = false;
         }
     }
-}
-
-/*FUNCTION******************************************************************************
-*
-* Function Name    : HVAC_Heat
-* Returned Value   : None.
-* Comments         :
-*    Decide a partir de la temperatura actual y la deseada, si se debe activar el fan.
-*    (La temperatura deseada debe ser mayor a la actual). El estado del fan debe estar
-*    en 'auto' y este modo debe estar activado para entrar a la función.
-*
-*END***********************************************************************************/
-void HVAC_Heat(void)
-{
-    GPIO_setOutput(HEAT_LED_PORT, HEAT_LED, 1);
-    GPIO_setOutput(COOL_LED_PORT, COOL_LED, 0);
-
-    if(TemperaturaActual < SetPoint)                    // El fan se debe encender si se quiere una temp. más alta.
-    {
-        GPIO_setOutput(FAN_LED_PORT,  FAN_LED,  1);
-        FAN_LED_State = 1;
-    }
-    else
-    {
-        GPIO_setOutput(FAN_LED_PORT,  FAN_LED,  0);
-        FAN_LED_State = 0;
-    }
-}
-
-/*FUNCTION******************************************************************************
-*
-* Function Name    : HVAC_Cool
-* Returned Value   : None.
-* Comments         :
-*    Decide a partir de la temperatura actual y la deseada, si se debe activar el fan.
-*    (La temperatura deseada debe ser menor a la actual). El estado del fan debe estar
-*    en 'auto' y este modo debe estar activado para entrar a la función.
-*
-*END***********************************************************************************/
-void HVAC_Cool(void)
-{
-    TemperaturaActual = ADC_GetTemperature(TEMP_CH);
-    GPIO_setOutput(HEAT_LED_PORT, HEAT_LED, 0);
-    GPIO_setOutput(COOL_LED_PORT, COOL_LED, 1);
-
-    if(TemperaturaActual > SetPoint)                    // El fan se debe encender si se quiere una temp. más baja.
-    {
-        GPIO_setOutput(FAN_LED_PORT,  FAN_LED,  1);
-        FAN_LED_State = 1;
-    }
-    else
-    {
-        GPIO_setOutput(FAN_LED_PORT,  FAN_LED,  0);
-        FAN_LED_State = 0;
-    }
-
 }
 
 /*FUNCTION******************************************************************************
@@ -313,32 +209,42 @@ void HVAC_Cool(void)
 * Function Name    : HVAC_Heartbeat
 * Returned Value   : None.
 * Comments         :
-*    Función que prende y apaga una salida para notificar que el sistema está activo.
-*    El periodo en que se hace esto depende de una entrada del ADC en esta función.
-*
+* Funcion que se ejecuta repetidamente, lee el ADC de cada Luz, evalua las persianas,
+* la secuencia de luces y el final del programa
 *END***********************************************************************************/
 void HVAC_Heartbeat(void)
 {
-    static int delay_en_curso = 0;
+    ADC_trigger();                                  //Dispara el ADC
+    while(ADC_is_busy());                           //Mientras el ADC convierte
 
-    ADC_trigger();
-    while(ADC_is_busy());
+    //Nos da el valor en Luxes(escala de 1-10 para cada luz medida)
+    luxes[0] = (ADC_result(Lampara1)*11)/16384;
+    luxes[1] = (ADC_result(Lampara2)*11)/16384;
+    luxes[2] = (ADC_result(Lampara3)*11)/16384;
 
-    delay = 15000 + (100 * ADC_result(HEARTBEAT_CH) / 4);                // Lectura del ADC por medio de la función.
+    if(B_1)     //Si se interrumpió por el SW1, llama a la funcion que controla el estado de la persiana 1
+    {
+        O_C_P1();
+        B_1 = false;
+    }
 
-    delay_en_curso -= DELAY;
-   if(delay_en_curso <= 0)
-   {
-       delay_en_curso = delay;
-       toggle ^= 1;
-   }
+    if(B_2)    //Si se interrumpió por el SW2, llama a la funcion que controla el estado de la persiana 2
+    {
+        O_C_P2();
+        B_2 = false;
+    }
 
-   GPIO_setOutput(HB_LED_PORT, HBeatLED, toggle);
+    if(sl)              //Si se interrumpe por el boton en P2.6 activa o desactiva la secuencia de luces
+        secuencia();
+    else                //Apaga el RGB
+    {
+        GPIO_setOutput(BSP_LED2_PORT,  BSP_LED2,  0);
+        GPIO_setOutput(BSP_LED3_PORT,  BSP_LED3,  0);
+        GPIO_setOutput(BSP_LED4_PORT,  BSP_LED4,  0);
+    }
 
-   if(delay_en_curso < DELAY)
-       usleep(delay_en_curso);
-   else
-       usleep(DELAY);
+    if(final)   //Si se desea entrar a la ventana de 5 segundos para terminar el programa
+        terminar_programa();
 }
 
 /*FUNCTION******************************************************************************
@@ -346,10 +252,8 @@ void HVAC_Heartbeat(void)
 * Function Name    : HVAC_PrintState
 * Returned Value   : None.
 * Comments         :
-*    Imprime via UART la situación actual del sistema en términos de temperaturas
-*    actual y deseada, estado del abanico, del sistema y estado de las entradas.
-*    Imprime cada cierto número de iteraciones y justo despues de recibir un cambio
-*    en las entradas, produciéndose un inicio en las iteraciones.
+*    Imprime via UART el estado de las persianas, valor de las luces, y otros mensajes de
+*    control cada 50 iteraciones o cada evento
 *END***********************************************************************************/
 void HVAC_PrintState(void)
 {
@@ -358,51 +262,169 @@ void HVAC_PrintState(void)
     iterations++;
     if(iterations >= ITERATIONS_TO_PRINT || event == TRUE)
     {
+       UART_putsf(MAIN_UART,"\r\n");
+
+       //Convierte los valores enteros del arreglo luxes en string para ser impresos
+       sprintf(lux1,"LUZ 1 = %d\r\n",luxes[0]);
+       UART_putsf(MAIN_UART,lux1);
+
+       sprintf(lux2,"LUZ 2 = %d\r\n",luxes[1]);
+       UART_putsf(MAIN_UART,lux2);
+
+       sprintf(lux3,"LUZ 3 = %d\r\n",luxes[2]);
+       UART_putsf(MAIN_UART,lux3);
+
+       //Dependiendo del estado del sistema imprime
+       if(persiana1)
+           UART_putsf(MAIN_UART, "Persiana 1 abierta\r\n");
+
+       if(!persiana1)
+           UART_putsf(MAIN_UART, "Persiana 1 cerrada\r\n");
+
+       if(persiana2)
+           UART_putsf(MAIN_UART, "Persiana 2 abierta\r\n");
+
+       if(!persiana2)
+           UART_putsf(MAIN_UART, "Persiana 2 cerrada\r\n");
+
+       if(sl)
+           UART_putsf(MAIN_UART, "Secuencia encendida\r\n");
+
+       if(!sl)
+           UART_putsf(MAIN_UART, "Secuencia apagada\r\n");
+
+        Delay_ms(500);
         iterations = 0;
         event = FALSE;
-
-        sprintf(state,"Fan: %s, System: %s, SetPoint: %0.2f\n\r",
-                    EstadoEntradas.FanState == On? "On":"Auto",
-                    SysSTR[EstadoEntradas.SystemState],
-                    SetPoint);
-        UART_putsf(MAIN_UART,state);
-
-        UART_putsf(MAIN_UART,"Pausa de 5 segundos\n\r");
-        Delay_ms(tiempo);
-        sprintf(state,"Temperatura Actual: %0.2f°C %0.2f°F  Fan: %s\n\r\n\r",
-                    TemperaturaActual,
-                    ((TemperaturaActual*9.0/5.0) + 32),
-                    FAN_LED_State?"On":"Off");
-        UART_putsf(MAIN_UART,state);
-
-
     }
 }
 
 /*FUNCTION******************************************************************************
 *
-* Function Name    : HVAC_SetPointUp
+* Function Name    :  O_C_P1
 * Returned Value   : None.
 * Comments         :
-*    Sube el valor deseado (set point). Llamado por interrupción a causa del SW1.
-*
+*    Abre o cierra la persiana 1 segun el estado acutual de la misma
 *END***********************************************************************************/
-void HVAC_SetPointUp(void)
+void O_C_P1(void)
 {
-    SetPoint += 0.5;
-    event = TRUE;
+    if(!persiana1)
+    {
+        persiana1 = true;
+        UART_putsf(MAIN_UART, "P1 UP...\r\n");
+    }
+    else if(persiana1)
+    {
+        persiana1 = false;
+        UART_putsf(MAIN_UART, "P1 DOWN...\r\n");
+    }
+
+    Delay_ms(5000);
 }
 
 /*FUNCTION******************************************************************************
 *
-* Function Name    : HVAC_SetPointDown
+* Function Name    :  O_C_P2
 * Returned Value   : None.
 * Comments         :
-*    Baja el valor deseado (set point). Llamado por interrupción a causa del SW2.
-*
+*    Abre o cierra la persiana 2 segun el estado acutual de la misma
 *END***********************************************************************************/
-void HVAC_SetPointDown(void)
+void O_C_P2(void)
 {
-    SetPoint -= 0.5;
-    event = TRUE;
+    if(!persiana2)
+    {
+        persiana2 =  true;
+        UART_putsf(MAIN_UART, "P2 UP...\r\n");
+    }
+    else if(persiana2)
+    {
+        persiana2 = false;
+        UART_putsf(MAIN_UART, "P2 DOWN...\r\n");
+    }
+
+    Delay_ms(5000);
+}
+
+/*FUNCTION******************************************************************************
+*
+* Function Name    : secuencia
+* Returned Value   : None.
+* Comments         :
+*   Realiza la secuencia de colores con el RGB
+*END***********************************************************************************/
+void secuencia(void)
+{
+    switch(i)   //Genera distintos colores con el RGB
+    {
+        case 0:
+            GPIO_setOutput(BSP_LED2_PORT,  BSP_LED2,  1);
+            GPIO_setOutput(BSP_LED3_PORT,  BSP_LED3,  0);
+            GPIO_setOutput(BSP_LED4_PORT,  BSP_LED4,  0);
+            Delay_ms(500);
+            i++;
+        break;
+
+        case 1:
+            GPIO_setOutput(BSP_LED2_PORT,  BSP_LED2,  0);
+            GPIO_setOutput(BSP_LED3_PORT,  BSP_LED3,  1);
+            GPIO_setOutput(BSP_LED4_PORT,  BSP_LED4,  0);
+            Delay_ms(500);
+            i++;
+        break;
+
+        case 2:
+            GPIO_setOutput(BSP_LED2_PORT,  BSP_LED2,  0);
+            GPIO_setOutput(BSP_LED3_PORT,  BSP_LED3,  0);
+            GPIO_setOutput(BSP_LED4_PORT,  BSP_LED4,  1);
+            Delay_ms(500);
+            i++;
+        break;
+
+        case 3:
+            GPIO_setOutput(BSP_LED2_PORT,  BSP_LED2,  1);
+            GPIO_setOutput(BSP_LED3_PORT,  BSP_LED3,  1);
+            GPIO_setOutput(BSP_LED4_PORT,  BSP_LED4,  0);
+            Delay_ms(500);
+            i++;
+        break;
+
+        case 4:
+            GPIO_setOutput(BSP_LED2_PORT,  BSP_LED2,  0);
+            GPIO_setOutput(BSP_LED3_PORT,  BSP_LED3,  1);
+            GPIO_setOutput(BSP_LED4_PORT,  BSP_LED4,  1);
+            Delay_ms(500);
+            i++;
+        break;
+
+        case 5:
+            GPIO_setOutput(BSP_LED2_PORT,  BSP_LED2,  1);
+            GPIO_setOutput(BSP_LED3_PORT,  BSP_LED3,  0);
+            GPIO_setOutput(BSP_LED4_PORT,  BSP_LED4,  1);
+            Delay_ms(500);
+            i++;
+        break;
+
+        case 6:
+            GPIO_setOutput(BSP_LED2_PORT,  BSP_LED2,  1);
+            GPIO_setOutput(BSP_LED3_PORT,  BSP_LED3,  1);
+            GPIO_setOutput(BSP_LED4_PORT,  BSP_LED4,  1);
+            Delay_ms(500);
+            i = 0;
+        break;
+    }
+    event = true;   //Forza la impresion
+}
+
+/*FUNCTION******************************************************************************
+*
+* Function Name    : terminar_programa
+* Returned Value   : None.
+* Comments         :
+*   Si se presiona el boton del P2.5 con la aplicacion en ejecucion, entra en la
+*   ventana de 5 segundos para terminar la aplicacion
+*END***********************************************************************************/
+void terminar_programa(void)
+{
+    Delay_ms1(5000);    //Ventana de 5 segundos
+    final = false;      //Si no termina, continua el programa
 }

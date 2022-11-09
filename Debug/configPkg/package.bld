@@ -11,7 +11,7 @@ var makeAssembly = false;
 var Executable = xdc.module('xdc.bld.Executable');
 
 var exeOpts = new Executable.Attrs({
-        cfgScript: 'C:/Users/intel14/workspace_v10/HVAC_UN_HILO_ORG/Aux_files/release.cfg',
+        cfgScript: 'C:/Users/ivanl/workspace_v12/HVAC_UN_HILO_ORG/Aux_files/release.cfg',
         profile: 'debug',
         cfgHome: 'configPkg',
 });
@@ -41,7 +41,7 @@ else {
 
 var thisObj = {
     cfg:        '../Aux_files/release.cfg',
-    outputPath: 'C:/Users/intel14/workspace_v10/HVAC_UN_HILO_ORG/Debug/configPkg',
+    outputPath: 'C:/Users/ivanl/workspace_v12/HVAC_UN_HILO_ORG/Debug/configPkg',
     exeName:    'release' + suffix,
     exeIntName: 'release' + suffix.replace('.', '_'),
     targ:       targ,
